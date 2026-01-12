@@ -49,7 +49,7 @@ msg_ok "Installed PostgreSQL"
 
 msg_info "Creating pretix Unix User"
 if ! id -u pretix >/dev/null 2>&1; then
-  adduser pretix --disabled-password --home /var/pretix >/dev/null
+  adduser --gecos "" --disabled-password --home /var/pretix pretix >/dev/null
 fi
 msg_ok "Created pretix Unix User"
 
