@@ -62,7 +62,17 @@ function update_script() {
 
 start
 build_container
+
+msg_info "Running Pretix install script inside container"
+pct exec "$CTID" -- bash -c "
+  curl -fsSL https://raw.githubusercontent.com/moritzb57/ProxmoxVE/refs/heads/feat/add-pretix/install/pretix-install.sh | bash
+"
+msg_ok "Pretix install script executed"
+
 description
+
+msg_ok "Completed successfully!"
+
 
 msg_ok "Completed successfully!\n"
 echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
