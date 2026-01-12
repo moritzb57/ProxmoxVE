@@ -171,7 +171,7 @@ chmod 0644 /etc/cron.d/pretix-runperiodic
 msg_ok "Cron Configured"
 
 msg_info "Recording Installed Version"
-sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && python -c 'import pretix; print(pretix.__version__)' >/opt/pretix_version.txt"
+sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && python -c 'import pretix; print(pretix.__version__)'" >/opt/pretix_version.txt
 msg_ok "Recorded Installed Version"
 
 motd_ssh

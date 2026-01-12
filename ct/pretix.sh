@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-source <(curl -fsSL https://raw.githubusercontent.com/moritzb57/ProxmoxVE/refs/heads/feat/add-pretix/misc/build.func)
+source <(curl -fsSL https://raw.githubusercontent.com/moritzb57/ProxmoxVE/feat/add-pretix/misc/build.func)
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: YourGitHubUsername
 # License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
@@ -65,7 +65,7 @@ build_container
 
 msg_info "Running Pretix install script inside container"
 pct exec "$CTID" -- bash -c "
-  curl -fsSL https://raw.githubusercontent.com/moritzb57/ProxmoxVE/refs/heads/feat/add-pretix/install/pretix-install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/moritzb57/ProxmoxVE/feat/add-pretix/install/pretix-install.sh | bash
 "
 msg_ok "Pretix install script executed"
 
