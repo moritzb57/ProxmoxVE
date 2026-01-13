@@ -12,12 +12,17 @@ setting_up_container
 network_check
 update_os
 
-# --- Defaults (can be overridden via container env if you extend later) ---
+# --- Defaults ---
 INSTANCE_NAME="${INSTANCE_NAME:-Pretix}"
 CURRENCY="${CURRENCY:-EUR}"
-BIND_ADDR="${BIND_ADDR:-0.0.0.0:8345}"
+# Pretix hört intern auf localhost, da Nginx davor geschaltet wird
+BIND_ADDR="127.0.0.1:8345"
 
 msg_info "Installing Dependencies"
+# Postfix pre-configuration to avoid interactive prompts
+echo "postfix postfix/main_mailer_type string 'Internet Site'" | debconf-set-selections
+echo "postfix postfix/mailname string $(hostname)" | debconf-set-selections
+
 $STD apt-get install -y \
   git \
   build-essential \
@@ -36,7 +41,10 @@ $STD apt-get install -y \
   libjpeg-dev \
   libopenjp2-7-dev \
   redis-server \
-  postfix
+  postfix \
+  nginx \
+  ufw \
+  openssl
 msg_ok "Installed Dependencies"
 
 msg_info "Installing Node.js"
@@ -54,9 +62,9 @@ fi
 msg_ok "Created pretix Unix User"
 
 msg_info "Creating Database"
-# Debian/PG defaults allow peer auth on local socket; we keep it simple (no DB password needed)
+# Ensure UTF8 encoding is used (default on modern Debian, but good practice)
 sudo -u postgres createuser pretix >/dev/null 2>&1 || true
-sudo -u postgres createdb -O pretix pretix >/dev/null 2>&1 || true
+sudo -u postgres createdb -O pretix -E UTF8 pretix >/dev/null 2>&1 || true
 msg_ok "Created Database"
 
 msg_info "Writing Pretix Configuration"
@@ -65,17 +73,18 @@ touch /etc/pretix/pretix.cfg
 chown -R pretix:pretix /etc/pretix
 chmod 0600 /etc/pretix/pretix.cfg
 
-# Determine URL based on container IP (HTTP, since no reverse proxy/HTTPS here)
+# Determine URL based on container IP
 import_local_ip
 
+# Config updated for HTTPS and Reverse Proxy trust
 cat >/etc/pretix/pretix.cfg <<EOF
 [pretix]
 instance_name=${INSTANCE_NAME}
-url=http://${LOCAL_IP}:8345
+url=https://${LOCAL_IP}
 currency=${CURRENCY}
 datadir=/var/pretix/data
-trust_x_forwarded_for=off
-trust_x_forwarded_proto=off
+trust_x_forwarded_for=on
+trust_x_forwarded_proto=on
 
 [database]
 backend=postgresql
@@ -116,6 +125,86 @@ msg_info "Initializing Database & Assets"
 sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && cd /var/pretix && python -m pretix migrate >/dev/null"
 sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && cd /var/pretix && python -m pretix rebuild >/dev/null"
 msg_ok "Initialized Pretix"
+
+msg_info "Generating Self-Signed SSL Certificate"
+mkdir -p /etc/nginx/ssl
+openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+  -keyout /etc/nginx/ssl/pretix.key \
+  -out /etc/nginx/ssl/pretix.crt \
+  -subj "/C=DE/ST=State/L=City/O=Pretix/OU=IT/CN=${LOCAL_IP}" \
+  >/dev/null 2>&1
+msg_ok "Generated SSL Certificate"
+
+msg_info "Configuring Nginx"
+# Remove default nginx config
+rm -f /etc/nginx/sites-enabled/default
+
+# Create Pretix Nginx Config
+# Adapted from official docs for local self-signed setup
+cat >/etc/nginx/sites-available/pretix <<EOF
+server {
+    listen 80 default_server;
+    listen [::]:80 ipv6only=on default_server;
+    server_name _;
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ipv6only=on ssl default_server;
+    server_name _;
+
+    ssl_certificate /etc/nginx/ssl/pretix.crt;
+    ssl_certificate_key /etc/nginx/ssl/pretix.key;
+
+    add_header Referrer-Policy same-origin;
+    add_header X-Content-Type-Options nosniff;
+
+    location / {
+        proxy_pass http://127.0.0.1:8345;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Host \$http_host;
+    }
+
+    location /media/ {
+        alias /var/pretix/data/media/;
+        expires 7d;
+        access_log off;
+    }
+
+    location ^~ /media/cachedfiles {
+        deny all;
+        return 404;
+    }
+    location ^~ /media/invoices {
+        deny all;
+        return 404;
+    }
+
+    location /static/staticfiles.json {
+        deny all;
+        return 404;
+    }
+    location /static/CACHE/manifest.json {
+        deny all;
+        return 404;
+    }
+    
+    # Using wildcard for python version to be safe
+    location /static/ {
+        alias /var/pretix/venv/lib/python3.*/site-packages/pretix/static.dist/;
+        access_log off;
+        expires 365d;
+        add_header Cache-Control "public";
+    }
+}
+EOF
+
+ln -s /etc/nginx/sites-available/pretix /etc/nginx/sites-enabled/
+systemctl restart nginx
+msg_ok "Configured Nginx"
 
 msg_info "Creating systemd Services"
 cat >/etc/systemd/system/pretix-web.service <<EOF
@@ -170,7 +259,15 @@ EOF
 chmod 0644 /etc/cron.d/pretix-runperiodic
 msg_ok "Cron Configured"
 
+msg_info "Configuring Firewall"
+ufw allow 22/tcp >/dev/null
+ufw allow 80/tcp >/dev/null
+ufw allow 443/tcp >/dev/null
+ufw --force enable >/dev/null
+msg_ok "Firewall Configured"
+
 msg_info "Recording Installed Version"
+# FIX: Redirect output outside of sudo command
 sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && python -c 'import pretix; print(pretix.__version__)'" >/opt/pretix_version.txt
 msg_ok "Recorded Installed Version"
 
