@@ -4,6 +4,10 @@
 # License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
 # Source: https://pretix.eu/about/en/
 
+# --- DEBUG MODE ON ---
+set -x
+# ---------------------
+
 source /dev/stdin <<<"$FUNCTIONS_FILE_PATH"
 color
 verb_ip6
@@ -15,14 +19,14 @@ update_os
 # --- Defaults ---
 INSTANCE_NAME="${INSTANCE_NAME:-Pretix}"
 CURRENCY="${CURRENCY:-EUR}"
-# Pretix hört intern auf localhost, da Nginx davor geschaltet wird
 BIND_ADDR="127.0.0.1:8345"
 
-msg_info "Installing Dependencies"
-# Postfix pre-configuration to avoid interactive prompts
+msg_info "Installing Dependencies (VERBOSE)"
+# Postfix pre-configuration
 echo "postfix postfix/main_mailer_type string 'Internet Site'" | debconf-set-selections
 echo "postfix postfix/mailname string $(hostname)" | debconf-set-selections
 
+# REMOVED >/dev/null to see errors
 $STD apt-get install -y \
   git \
   build-essential \
@@ -57,14 +61,14 @@ msg_ok "Installed PostgreSQL"
 
 msg_info "Creating pretix Unix User"
 if ! id -u pretix >/dev/null 2>&1; then
-  adduser --gecos "" --disabled-password --home /var/pretix pretix >/dev/null
+  adduser --gecos "" --disabled-password --home /var/pretix pretix
 fi
 msg_ok "Created pretix Unix User"
 
 msg_info "Creating Database"
-# Ensure UTF8 encoding is used (default on modern Debian, but good practice)
-sudo -u postgres createuser pretix >/dev/null 2>&1 || true
-sudo -u postgres createdb -O pretix -E UTF8 pretix >/dev/null 2>&1 || true
+# REMOVED >/dev/null to see errors
+sudo -u postgres createuser pretix || true
+sudo -u postgres createdb -O pretix -E UTF8 pretix || true
 msg_ok "Created Database"
 
 msg_info "Writing Pretix Configuration"
@@ -73,10 +77,8 @@ touch /etc/pretix/pretix.cfg
 chown -R pretix:pretix /etc/pretix
 chmod 0600 /etc/pretix/pretix.cfg
 
-# Determine URL based on container IP
 import_local_ip
 
-# Config updated for HTTPS and Reverse Proxy trust
 cat >/etc/pretix/pretix.cfg <<EOF
 [pretix]
 instance_name=${INSTANCE_NAME}
@@ -111,9 +113,10 @@ msg_info "Creating Virtualenv"
 sudo -u pretix -s bash -lc "python3 -m venv /var/pretix/venv"
 msg_ok "Created Virtualenv"
 
-msg_info "Installing Pretix (PyPI) + Gunicorn"
-sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && pip3 install -U pip setuptools wheel >/dev/null"
-sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && pip3 install pretix gunicorn >/dev/null"
+msg_info "Installing Pretix (PyPI) + Gunicorn (VERBOSE)"
+# REMOVED >/dev/null to see compilation errors
+sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && pip3 install -U pip setuptools wheel"
+sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && pip3 install pretix gunicorn"
 msg_ok "Installed Pretix"
 
 msg_info "Preparing Data Directories"
@@ -122,8 +125,8 @@ chmod +x /var/pretix
 msg_ok "Prepared Data Directories"
 
 msg_info "Initializing Database & Assets"
-sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && cd /var/pretix && python -m pretix migrate >/dev/null"
-sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && cd /var/pretix && python -m pretix rebuild >/dev/null"
+sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && cd /var/pretix && python -m pretix migrate"
+sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && cd /var/pretix && python -m pretix rebuild"
 msg_ok "Initialized Pretix"
 
 msg_info "Generating Self-Signed SSL Certificate"
@@ -131,16 +134,12 @@ mkdir -p /etc/nginx/ssl
 openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
   -keyout /etc/nginx/ssl/pretix.key \
   -out /etc/nginx/ssl/pretix.crt \
-  -subj "/C=DE/ST=State/L=City/O=Pretix/OU=IT/CN=${LOCAL_IP}" \
-  >/dev/null 2>&1
+  -subj "/C=DE/ST=State/L=City/O=Pretix/OU=IT/CN=${LOCAL_IP}"
 msg_ok "Generated SSL Certificate"
 
 msg_info "Configuring Nginx"
-# Remove default nginx config
 rm -f /etc/nginx/sites-enabled/default
 
-# Create Pretix Nginx Config
-# Adapted from official docs for local self-signed setup
 cat >/etc/nginx/sites-available/pretix <<EOF
 server {
     listen 80 default_server;
@@ -192,7 +191,6 @@ server {
         return 404;
     }
     
-    # Using wildcard for python version to be safe
     location /static/ {
         alias /var/pretix/venv/lib/python3.*/site-packages/pretix/static.dist/;
         access_log off;
@@ -202,7 +200,16 @@ server {
 }
 EOF
 
-ln -s /etc/nginx/sites-available/pretix /etc/nginx/sites-enabled/
+ln -s /etc/nginx/sites-available/pretix /etc/nginx/sites-enabled/ || true
+
+# DEBUG: Check Nginx Config
+msg_info "Testing Nginx Configuration"
+nginx -t
+if [ $? -ne 0 ]; then
+    msg_error "Nginx configuration failed!"
+    exit 1
+fi
+
 systemctl restart nginx
 msg_ok "Configured Nginx"
 
@@ -247,7 +254,11 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now pretix-web pretix-worker >/dev/null
+if ! systemctl enable --now pretix-web pretix-worker; then
+    msg_error "Failed to start services. Checking logs:"
+    journalctl -xe | tail -n 50
+    exit 1
+fi
 msg_ok "Created & Started systemd Services"
 
 msg_info "Setting up Cron (runperiodic)"
@@ -260,14 +271,14 @@ chmod 0644 /etc/cron.d/pretix-runperiodic
 msg_ok "Cron Configured"
 
 msg_info "Configuring Firewall"
-ufw allow 22/tcp >/dev/null
-ufw allow 80/tcp >/dev/null
-ufw allow 443/tcp >/dev/null
-ufw --force enable >/dev/null
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw --force enable
 msg_ok "Firewall Configured"
 
 msg_info "Recording Installed Version"
-# FIX: Redirect output outside of sudo command
+# This redirection was fixed in the previous step, ensuring it is correct here
 sudo -u pretix -s bash -lc "source /var/pretix/venv/bin/activate && python -c 'import pretix; print(pretix.__version__)'" >/opt/pretix_version.txt
 msg_ok "Recorded Installed Version"
 
